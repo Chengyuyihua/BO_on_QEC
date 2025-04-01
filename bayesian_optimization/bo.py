@@ -75,15 +75,14 @@ class ObjectiveFunction():
         evaluator = CSS_Evaluator(css.hx,css.hz)
         
         # pL = evaluator.Get_error_rate(physical_error_rate=self.pp)
-        pL,PL = evaluator.Get_precise_logical_error_rate_iterative(physical_error_rate=self.pp, total_trail=50000, block=css.n//4, init_samples=100, batch_size=50)
+        pL = evaluator.Get_precise_logical_error_rate_iterative(physical_error_rate=self.pp, total_trail=50000, block=css.n//4, init_samples=200, batch_size=50)
         
-        
-        return pL,PL
+        return pL
     def lerpq(self,x):
         css = self.code_constructor.construct(x)
         if css.k==0:
             return 1
-        pL,_ = self.ler(css)
+        pL = self.ler(css)
         pL_per_lq = 1-(1-pL)**(1/css.k)
         return max(pL_per_lq,1e-20)
     

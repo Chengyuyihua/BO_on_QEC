@@ -67,9 +67,9 @@ class OverallEncode():
 # WLSubtreeKernel(72,36,36,num_iterations=3,encoder=OverallEncode(codeconstructor,'graph').encode)
 
 results = []
-p = 3
-q = 3
-m = 5
+p = 2
+q = 2
+m = 2
 para_dict = {'p':p,'q':q,'m':m}
 codeconstructor = CodeConstructor(method='qc-ldpc-hgp',para_dict = {'p':p,'q':q,'m':m})
 gnp = Get_new_points_function(method='qc-ldpc-hgp',hyperparameters = para_dict).get_new_points_function
@@ -79,6 +79,7 @@ next_points_num = 4
 candidate_num = 512
 initial_sample_num = 15
 bo_iteration = 100
+
 
 
 gnp = Get_new_points_function(hyperparameters = {'p': p, 'q': p, 'm': m},encode='None').get_new_points_function
@@ -91,6 +92,7 @@ bo = BayesianOptimization(
                 get_new_points_function= gnp,
                 bounds= torch.tensor([[0.0 for i in range(p*q)], [m for i in range(p*q)]]),
                 normalizer_mode='log_pos_trans',
+                normalizer_positive = False,
                 kernel =gnnkernel_function,
                 encoder = encoder.encode,
                 embedding=embedding,
@@ -99,8 +101,9 @@ bo = BayesianOptimization(
                 initial_sample_num = initial_sample_num,
                 candidate_num = candidate_num,
                 next_points_num = next_points_num,
-                training_num = 5,
-                description= f'Bayesian Optimization with Graph Neural Network kernel(with out pre-training) and qc-ldpc-hgp construction,para_dict:{para_dict}'
+                training_num = 10,
+                suggest_next_method = 'hill_climbing',
+                description= 'Bayesian Optimization with Graph Neural Network kernel(with out pre-training) and qc-ldpc-hgp construction'
             )
 para,ler,evaluation_history = bo.run()
 
@@ -109,9 +112,8 @@ plt.yscale('log')
 plt.xlabel('Iterations')
 plt.ylabel('Evaluation History')
 plt.title('Evaluation History (Log Scale)')
-plt.savefig(f'./data/image/{bo.description}.png', dpi=300)
-# plt.show()
+plt.show()
 
 print(ler)
 print(para)
-results.append({'para':para,'ler':ler,'evaluation_history':evaluation_history,'method':bo.description,'para_dict':para_dict})
+results.append({'para':para,'ler':ler,'evaluation_history':evaluation_history,'method':bo.description})

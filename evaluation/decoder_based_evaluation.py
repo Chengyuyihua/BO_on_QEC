@@ -3,7 +3,7 @@ This module contains the functions to evaluate the performance of the code with 
 """
 
 import numpy as np
-from css_decode_sim import css_decode_sim
+from evaluation.css_decode_sim import css_decode_sim
 
 from bposd.hgp import hgp
 from ldpc.codes import rep_code
@@ -95,7 +95,7 @@ class CSS_Evaluator():
         self.n = qcode.N
         
 
-    def Get_error_rate(self,physical_error_rate=0.05,trail=1000):
+    def Get_error_rate(self,physical_error_rate=0.01,trail=2000):
         if self.k == 0:
             return 1
         decoder_sim = css_decode_sim(
@@ -127,27 +127,29 @@ class CSS_Evaluator():
     def init_decoder(self,physical_error_rate):
         self.bpd_z = bposd_decoder(
             self.hx,
-            channel_probs=np.ones(self.n)*(physical_error_rate*2/3),
-            max_iter=10,
+            error_rate=physical_error_rate/2,
+            channel_probs=[None],
+            max_iter=self.n,
             bp_method="minimum_sum",
-            ms_scaling_factor= 0.625,
+            ms_scaling_factor= 0,
             osd_method="osd_cs",
-            osd_order=3,
+            osd_order=7,
         )
 
         # decoder for X-errors
         self.bpd_x = bposd_decoder(
             self.hz,
-            channel_probs=np.ones(self.n)*(physical_error_rate*2/3),
-            max_iter=10,
+            error_rate = physical_error_rate/2,
+            channel_probs=[None],
+            max_iter=self.n,
             bp_method="minimum_sum",
-            ms_scaling_factor= 0.625,
+            ms_scaling_factor= 0,
             osd_method="osd_cs",
-            osd_order=3,
+            osd_order=7,
         )
         
     
-    def Get_precise_logical_error_rate(self,physical_error_rate=0.0001,trail=1000,block = 14):
+    def Get_precise_logical_error_rate(self,physical_error_rate=0.01,trail=1000,block = 14):
         '''using the depolorizing channel to calculate the logical error rate'''
         self.init_decoder(physical_error_rate)
         
@@ -155,19 +157,19 @@ class CSS_Evaluator():
         # TODO
         p_l = 0
         PL = [0]
-        for n_e in range(1,self.n+1):
+        for n_e in range(1,self.n):
             p_ne = binomial_probability(self.n,n_e,physical_error_rate)
 
             if n_e <= block+1 : 
                 p_l_ne = self.P_L_given_n_e(n_e,physical_error_rate,trail)
-                print('n_e:',n_e)
+                # print('n_e:',n_e)
             else:
                 p_l_ne = 1
             p_l += p_ne*p_l_ne
             PL.append(p_l_ne)
 
         return p_l,PL
-    def P_L_given_n_e(self,n_e,physical_error_rate=0.0001,trail=1000):
+    def P_L_given_n_e(self,n_e,physical_error_rate=0.0001,trail=100):
         '''calculate the probability of logical error given n_e error'''
         # TODO
         p_l_ne = 0
@@ -198,10 +200,10 @@ class CSS_Evaluator():
         residual_x = (error_x+self.bpd_x.osdw_decoding) % 2
         residual_z = (error_z+self.bpd_z.osdw_decoding) % 2
         # print(f'residual_x,residual_z:{residual_z}')
-        if (self.lx@residual_x % 2==0).all() and (self.lz@residual_z % 2 == 0).all():
-            return 0
-        else:
+        if (self.lx@residual_x % 2).any() and (self.lz@residual_z % 2).any():
             return 1
+        else:
+            return 0
     def Get_error(self,d_e):
         '''sample an error of weight d_e under the depolorizing model'''
         error_x = np.zeros(self.n).astype(int)

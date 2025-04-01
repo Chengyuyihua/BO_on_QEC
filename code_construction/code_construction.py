@@ -43,15 +43,54 @@ class CSSCode(StabilizerCode):
         if not self.check_validity():
             raise ValueError('This CSS code is not valid.')
         self.n = self.hx.shape[1]
+        self.k = self.compute_css_k(hx,hz)
+        
     
     def check_validity(self):
         if not isinstance(self.hx, np.ndarray)or not isinstance(self.hz, np.ndarray):
+            print('not np.array')
             return False
         if self.hx.shape[1]!=self.hz.shape[1]:
+            print('n is not equal')
             return False
         if ((self.hz @ self.hx.T%2) != 0).any():
+            print('hz hx is not commute')
             return False
         return True
+    def gf2_rank(self,A):
+        '''
+            mod2 rank
+        '''
+
+        A = A.copy() % 2
+        m, n = A.shape
+        rank = 0
+        for col in range(n):
+            pivot_row = None
+            for row in range(rank, m):
+                if A[row, col] == 1:
+                    pivot_row = row
+                    break
+            if pivot_row is None:
+                continue 
+
+            A[[rank, pivot_row]] = A[[pivot_row, rank]]
+
+            for row in range(m):
+                if row != rank and A[row, col] == 1:
+                    A[row] = (A[row] + A[rank]) % 2
+            rank += 1
+            if rank == m:
+                break
+        return rank
+    def compute_css_k(self,Hx, Hz):
+
+        n = Hx.shape[1]
+        r_hx = self.gf2_rank(Hx)
+        r_hz = self.gf2_rank(Hz)
+    
+        k = n - r_hx - r_hz
+        return k
     
 
 class CodeConstructor():
@@ -69,6 +108,8 @@ class CodeConstructor():
         self.method = method
         self.para_dict = para_dict
         self.n = 0
+        self.nx = 0
+        self.nz = 0
         self.k = None
         
         if not self.check_parameters_validity():
@@ -101,6 +142,8 @@ class CodeConstructor():
             return False
         self.n = self.para_dict['n']
         self.k = self.para_dict['k']
+        self.nx = self.para_dict['r']
+        self.nz = self.n-self.k-self.nx
         return True
     
     def check_qc_ldpc_hgp_parameters_validity(self):
@@ -124,10 +167,15 @@ class CodeConstructor():
                 return False
             if not 'm_2' in self.para_dict.keys():
                 return False
-            self.n = self.para_dict['m']*self.para_dict['m']*(self.para_dict['p']*self.para_dict['p_2']+self.para_dict['q']*self.para_dict['q_2'])
+            self.n = self.para_dict['m']*self.para_dict['m_2']*(self.para_dict['p']*self.para_dict['p_2']+self.para_dict['q']*self.para_dict['q_2'])
+            self.nx = self.para_dict['m']*self.para_dict['m_2']*self.para_dict['p']*self.para_dict['q_2']
+            self.nz = self.para_dict['m']*self.para_dict['m_2']*self.para_dict['p_2']*self.para_dict['q']
         else:
             self.n = self.para_dict['m']**2*(self.para_dict['p']**2 + self.para_dict['q']**2)
-            
+            self.nx = self.para_dict['m']**2*self.para_dict['p']*self.para_dict['q']
+            self.nz = self.nx
+        
+ 
         
         return True
     
@@ -236,7 +284,7 @@ class CodeConstructor():
         """
         if M_2 is None:
             H1 = self.ldpc_construction(self.para_dict['p'],self.para_dict['q'],self.para_dict['m'],M)
-            H2 = self.ldpc_construction(self.para_dict['p_2'],self.para_dict['q_2'],self.para_dict['m_2'],M_2)
+            H2 = self.ldpc_construction(self.para_dict['p'],self.para_dict['q'],self.para_dict['m'],M)
         else:
             H1 = self.ldpc_construction(self.para_dict['p'],self.para_dict['q'],self.para_dict['m'],M)
             H2 = self.ldpc_construction(self.para_dict['p_2'],self.para_dict['q_2'],self.para_dict['m_2'],M_2)
@@ -256,8 +304,10 @@ class CodeConstructor():
         return CSSCode(HX,HZ)
   
     def ldpc_construction(self,p,q,m,M):
-        if M.shape!=(p,q):
+        # print(M)
+        if len(M)!=p*q:
             raise ValueError('The shape of M is invalid!')
+        M = M.reshape(p,q)
         H = np.zeros((p*m,q*m))
 
         # Define the base cyclic shift matrix S (m x m)

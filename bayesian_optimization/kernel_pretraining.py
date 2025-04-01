@@ -1,0 +1,1 @@
+from bayesian_optimization.kernel import GNNKernel

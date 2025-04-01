@@ -13,6 +13,7 @@ from itertools import product
 from math import floor
 import matplotlib.pyplot as plt
 from bposd import bposd_decoder
+import itertools
 from bposd.css import css_code
 def binomial_probability(n, d_e,p_p):
     return comb(n, d_e) * (p_p ** d_e) * ((1 - p_p) ** (n - d_e))
@@ -90,7 +91,7 @@ class CSS_Evaluator():
         self.hz = hz
         qcode = css_code(self.hx, self.hz)
         self.lx = qcode.lx
-        self.lz = qcode.lz
+        self.lz = qcode.lz # logical operators
         self.k = qcode.K
         self.n = qcode.N
         
@@ -107,9 +108,9 @@ class CSS_Evaluator():
             seed= 0,
             bp_method= "minimum_sum",
             ms_scaling_factor= 0.625,
-            max_iter= 10,
+            max_iter= self.n,
             osd_method= "osd_cs",
-            osd_order= 3,
+            osd_order= 7,
             save_interval= 2,
             output_file= None,
             check_code= 0,
@@ -123,17 +124,46 @@ class CSS_Evaluator():
         logical_error_rate = decoder_sim.run_decode_sim()
 
         return logical_error_rate
+    def Get_logical_error_rate_Monte_Carlo(self,physical_error_rate= 0.01,xyz_bias = [1,1,1],trail=10000):
+        if self.k == 0:
+            return 1
+        errors = self.Get_errors(trail,physical_error_rate=physical_error_rate,xyz_bias=xyz_bias)
+        fail = 0
+        self.init_decoder(physical_error_rate)
+        for error_x,error_z in errors:
+            
+            fail += self.Single_run(error_x,error_z)
+        return fail/trail
+        
+    def Get_errors(self,number,physical_error_rate=0.01,xyz_bias=[1,1,1]):
+        
+        error_random_numbers = np.random.uniform(0,1,(number,self.n))/physical_error_rate
+        xyz_sum = sum(xyz_bias)
+        errors = []
+        for i in range(number):
+            error_x = np.zeros(self.n)
+            error_z = np.zeros(self.n)
+            for j in range(len(error_random_numbers[i])):
+                if error_random_numbers[i][j]<= xyz_bias[0]/xyz_sum:
+                    error_x[j] = 1
+                elif error_random_numbers[i][j]<= (xyz_bias[0]+xyz_bias[1])/xyz_sum:
+                    error_x[j] = 1
+                    error_z[j] = 1
+                elif error_random_numbers[i][j]<= 1:
+                    error_z[j] = 1
+            errors.append((error_x,error_z))
 
+        return errors
     def init_decoder(self,physical_error_rate):
         self.bpd_z = bposd_decoder(
             self.hx,
             error_rate=physical_error_rate/2,
             channel_probs=[None],
-            max_iter=self.n,
+            max_iter=self.n//2,
             bp_method="minimum_sum",
             ms_scaling_factor= 0,
             osd_method="osd_cs",
-            osd_order=7,
+            osd_order=3,
         )
 
         # decoder for X-errors
@@ -141,11 +171,11 @@ class CSS_Evaluator():
             self.hz,
             error_rate = physical_error_rate/2,
             channel_probs=[None],
-            max_iter=self.n,
+            max_iter=self.n//2,
             bp_method="minimum_sum",
             ms_scaling_factor= 0,
             osd_method="osd_cs",
-            osd_order=7,
+            osd_order=3,
         )
         
     
@@ -167,12 +197,110 @@ class CSS_Evaluator():
                 p_l_ne = 1
             p_l += p_ne*p_l_ne
             PL.append(p_l_ne)
-
+        
+        
         return p_l,PL
-    def P_L_given_n_e(self,n_e,physical_error_rate=0.0001,trail=100):
+    def Get_precise_logical_error_rate_iterative(self, physical_error_rate=0.01, total_trail=100000, block=999, init_samples=100, batch_size=50):
+
+        self.init_decoder(physical_error_rate)
+        
+
+        strata = list(range(2, min(block + 2,self.n)))
+
+        sample_counts = {n_e: 0 for n_e in strata}
+        success_sums = {n_e: 0.0 for n_e in strata}
+        bino = {n_e: binomial_probability(self.n,n_e,physical_error_rate) for n_e in strata}
+
+        
+
+        for n_e in strata:
+
+            p_l_est = self.P_L_given_n_e(n_e, init_samples)
+            sample_counts[n_e] = init_samples
+            success_sums[n_e] = p_l_est * init_samples
+        
+        used_samples = init_samples * len(strata)
+        
+
+        while used_samples < total_trail:
+            remaining = total_trail - used_samples
+            current_batch = min(batch_size, remaining)
+            weight = {n_e: 0.0 for n_e in strata}
+
+            for n_e in strata:
+                if success_sums[n_e]==0:
+                    weight[n_e] = np.log(bino[n_e])+np.log(sample_counts[n_e]+current_batch-1)-3*np.log(sample_counts[n_e]+current_batch)
+                else:
+                    weight[n_e] = np.log(bino[n_e])+np.log((sample_counts[n_e]-success_sums[n_e])*success_sums[n_e]*current_batch)-np.log(sample_counts[n_e]+current_batch)-3*np.log(sample_counts[n_e])
+            # print(weight)
+            
+            max_n_e = max(weight, key=weight.get)
+            p_l_est = self.P_L_given_n_e(max_n_e, current_batch)
+            sample_counts[max_n_e] += current_batch
+            success_sums[max_n_e] = current_batch * p_l_est
+            used_samples += current_batch
+
+            
+        p_l_total = 0
+        p_1 = self.get_error_rate_1()
+        p_l_total += binomial_probability(self.n,1,physical_error_rate)*p_1
+        # print(p_1)
+        for n_e in strata:
+            p_l_total += bino[n_e] * success_sums[n_e]/sample_counts[n_e]
+        # print(sample_counts)
+        # print({n_e: success_sums[n_e]/sample_counts[n_e] for n_e in strata})
+        
+        return p_l_total
+    def get_error_rate_1(self):
+        errors = []
+        for i in range(self.n):
+            x = np.zeros(self.n)
+            z = np.zeros(self.n)
+            x[i] = 1
+            z[i] = 0
+            errors.append((x,z))
+            x = np.zeros(self.n)
+            z = np.zeros(self.n)
+            x[i] = 1
+            z[i] = 1
+            errors.append((x,z))
+            x = np.zeros(self.n)
+            z = np.zeros(self.n)
+            x[i] = 0
+            z[i] = 1
+            errors.append((x,z))
+        p = 0
+        for i in errors:
+            p+= self.Single_run(i[0],i[1])
+        return p/len(errors)
+
+    # def Get_logical_error_rate_through_interpolation(self,physical_error_rate=0.01,trail = 1000,block=20):
+    #     self.init_decoder(physical_error_rate)
+        
+        
+    #     # TODO
+    #     p_l = 0
+    #     PL = [0]
+    #     for n_e in range(1,self.n):
+    #         p_ne = binomial_probability(self.n,n_e,physical_error_rate)
+
+    #         if n_e <= block+1 : 
+    #             p_l_ne = self.P_L_given_n_e(n_e,physical_error_rate,int(trail*(0.98**n_e)))
+    #             # print('n_e:',n_e)
+    #         else:
+    #             p_l_ne = 1
+    #         p_l += p_ne*p_l_ne
+    #         PL.append(p_l_ne)
+        
+    #     print(PL)
+
+    #     return p_l,PL
+
+    def P_L_given_n_e(self,n_e,trail=100):
         '''calculate the probability of logical error given n_e error'''
         # TODO
         p_l_ne = 0
+
         
         for t in range(trail):
             error_x,error_z = self.Get_error(n_e)
@@ -182,28 +310,41 @@ class CSS_Evaluator():
         
         return p_l_ne/trail
     def Single_run(self,error_x,error_z):
-        # print(f'error_x,error_z:{error_x,error_z}')
-        # decode z
-        synd_z = self.hx@error_z % 2
-        self.bpd_z.decode(synd_z)
-        
-        #update the channel probability
-        # self._channel_update()
+    
+        if sum(error_z) != 0:
 
-        synd_x = self.hz@error_x % 2
-        self.bpd_x.decode(synd_x)
+       
+            synd_z = self.hx@error_z % 2
+            self.bpd_z.decode(synd_z)
+            residual_z = (error_z+self.bpd_z.osdw_decoding) % 2
+        else:
+            residual_z = error_z
+        
+
+        if sum(error_x) != 0:
+  
+            synd_x = self.hz@error_x % 2
+            self.bpd_x.decode(synd_x)
+            residual_x = (error_x+self.bpd_x.osdw_decoding) % 2
+        else:
+            residual_x = error_x
         
         
 
         # print(error_z)
         # print(self.bpd_z.osdw_decoding)
-        residual_x = (error_x+self.bpd_x.osdw_decoding) % 2
-        residual_z = (error_z+self.bpd_z.osdw_decoding) % 2
+ 
+
+        
+        
         # print(f'residual_x,residual_z:{residual_z}')
         if (self.lx@residual_x % 2).any() and (self.lz@residual_z % 2).any():
             return 1
         else:
             return 0
+
+
+
     def Get_error(self,d_e):
         '''sample an error of weight d_e under the depolorizing model'''
         error_x = np.zeros(self.n).astype(int)

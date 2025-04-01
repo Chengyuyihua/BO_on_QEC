@@ -466,7 +466,7 @@ class css_decode_sim():
             self._single_run()
 
 
-        return float(self.__dict__['osdw_logical_error_rate'])
+        return float(self.__dict__['osdw_word_error_rate'])
 
 
     def output_dict(self):

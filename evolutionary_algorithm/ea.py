@@ -62,3 +62,4 @@ if __name__ == '__main__':
                termination=('n_gen', 200),
                seed=1,
     )
+

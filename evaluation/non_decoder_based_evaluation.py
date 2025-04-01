@@ -2,7 +2,7 @@
 This file contains the code for the evaluation of the stabilizer codes using
 """
 from typing import Tuple
-from code_construction.code_construction import StabilizerCode
+from code_construction.code_construction import StabilizerCode,CSSCode
 import numpy as np
 class Undetectable_error_rate():
     def __init__(self,stabilizer_code:StabilizerCode,noise_model=(1,1,1)):
@@ -66,6 +66,15 @@ class Undetectable_error_rate():
                 total_prob *= p_y
         return total_prob
         
+class ExpectedCodewordDistanceVariance():
+    def __init__(self,css_code:CSSCode,noise_model=(1,1,1)):
+
+        self.css_code = css_code
+        self.noise_model = noise_model
+    
+    def evaluate(self):
+        return
+
 
 
 if __name__ == '__main__':

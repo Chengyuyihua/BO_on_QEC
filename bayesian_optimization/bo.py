@@ -33,6 +33,17 @@ from code_construction.code_construction import CodeConstructor
 import time
 from scipy.special import gammaln
 from scipy.optimize import root_scalar
+from scipy.special import comb
+from pymoo.core.problem import Problem
+import numpy as np
+from pymoo.algorithms.soo.nonconvex.ga import GA
+from pymoo.optimize import minimize
+from pymoo.operators.crossover.sbx import SBX
+from pymoo.operators.mutation.pm import PM
+from pymoo.operators.repair.rounding import RoundingRepair
+from pymoo.operators.sampling.rnd import IntegerRandomSampling
+from pymoo.algorithms.soo.nonconvex.ga import GA
+import matplotlib.pyplot as plt
 
 # class Batch_Bayesian_Optimization():
     # def __init__(self):
@@ -52,29 +63,29 @@ from scipy.optimize import root_scalar
     #     pass
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-class LogicalErrorRatePerQubit():
+class ObjectiveFunction():
     """
     The lower the better
     """
     def __init__(self,code_constructor: CodeConstructor,pp=0.01):
         self.code_constructor = code_constructor
         self.pp = pp
-    def LERforward(self,css):
+    def ler(self,css):
         
         evaluator = CSS_Evaluator(css.hx,css.hz)
         
         # pL = evaluator.Get_error_rate(physical_error_rate=self.pp)
-        pL,_ = evaluator.Get_precise_logical_error_rate(physical_error_rate=self.pp,trail=300,block = 204)
+        pL,PL = evaluator.Get_precise_logical_error_rate_iterative(physical_error_rate=self.pp, total_trail=50000, block=css.n//4, init_samples=100, batch_size=50)
         
         
-        return pL
-    def forward(self,x):
+        return pL,PL
+    def lerpq(self,x):
         css = self.code_constructor.construct(x)
         if css.k==0:
             return 1
-        pL = self.LERforward(css)
+        pL,_ = self.ler(css)
         pL_per_lq = 1-(1-pL)**(1/css.k)
-        return pL_per_lq
+        return max(pL_per_lq,1e-20)
     
     def psuedo_distance(self,n,pL):
         c1 = gammaln(n+1)
@@ -89,34 +100,90 @@ class LogicalErrorRatePerQubit():
         css = self.code_constructor.construct(x)
         if css.k==0:
             return 1
-        pL = self.LERforward(css)
+        pL,_ = self.ler(css)
         return self.psuedo_distance(css.n,pL)
+    def psuedo_threshold(self,x):
+        css = self.code_constructor.construct(x)
+        if css.k==0:
+            return 1
+        _,PL = self.ler(css)
+        # print(PL)
+        def psuedo_threshold_function(logp_p,n,PL):
+            p_p = np.exp(logp_p)
+            p_l = 0
+            for i in range(len(PL)):
+                p_l += PL[i] * self.binomial_probability(n,i,p_p)
+            return p_l-p_p
+        sol = root_scalar(psuedo_threshold_function, args=(css.n,PL), bracket=[-15, np.log(1/3)], method='brentq', xtol=1e-3)
+        th_test = sol.root
+        return np.exp(th_test)
+    
+    def binomial_probability(self,n,d_e,p_p):
+        return comb(n, d_e) * (p_p ** d_e) * ((1 - p_p) ** (n - d_e))
+    def show_ler_plot(self,x,k=1):
+        css = self.code_constructor.construct(x)
+        if css.k==0:
+            return 1
+        _,PL = self.ler(css)
+        def pl(p_p):
+            p_l = 0
+            for i in range(len(PL)):
+                p_l += PL[i] * self.binomial_probability(css.n,i,p_p)
+            return 1-(1-p_l)**(k/css.k)
+        pp = np.linspace(-np.log(1/2),-np.log(1e-04),20)
+        pp = np.exp(-pp)
+        pL = np.array([pl(p) for p in pp])
+        plt.plot(pp, pL,label='qec code')
+        plt.plot(pp,pp ,label='pp_pl')
+
+        plt.xscale('log')
+        plt.yscale('log')
+        plt.xlabel('Physical Error Rate (pp)')
+        plt.ylabel(f'Logical Error Rate per {k}-qubit(pl)')
+        plt.legend()
+        plt.title('Logical Error Rate vs Physical Error Rate')
+        plt.show()
+        
+
 
 class Normalizer:
-    def __init__(self, mode='log_pos_trans', epsilon=1e-11):
+    def __init__(self, mode='log_pos_trans', epsilon=1e-20,possitive = True):
         self.epsilon = epsilon
         self.mean = 0
         self.std = 1
         self.mode = mode
+        self.possitive = possitive
 
     def normalize(self, x):
-
+        if self.mode is None:
+            return (x-self.mean)/self.std
         if self.mode == 'log_pos_trans':
             return -self.log_pos_trans(x)
+        if self.mode == 'log_pos_trans_reverse':
+            return self.log_pos_trans
+        
 
     def get_mean_std(self,X):
+        if self.mode is None:
+            self.mean = X.mean()
+            self.std = X.std()
         if self.mode == 'log_pos_trans':
             log_outputs = torch.tensor([self.log_pos_trans(i) for i in X])
             self.mean = log_outputs.mean()
             self.std = log_outputs.std()
+        
         return self.mean, self.std
 
     def inverse_normalize(self, y):
+        if self.mode is None:
+            return y * self.std +self.mean
         if self.mode == 'log_pos_trans':
             return self.inverse_log_pos_trans(-y)
+        if self.mode == 'log_pos_trans_reverse':
+            return self.inverse_log_pos_trans(y)
 
     def log_pos_trans(self, x):
-        y = x / (1 - x + self.epsilon)
+        y = (x+self.epsilon) / (1 - x + self.epsilon)
         return (torch.log(y) - self.mean)/self.std
 
     def inverse_log_pos_trans(self, y):
@@ -151,6 +218,7 @@ class BayesianOptimization():# for single point optimization; using botorch
                     get_new_points_function: Callable,
                     bounds: Tensor,
                     normalizer_mode='log_pos_trans',
+                    normalizer_positive = True,
                     kernel = None,
                     encoder = None,
                     embedding = None,
@@ -161,6 +229,7 @@ class BayesianOptimization():# for single point optimization; using botorch
                     candidate_num = 512,
                     next_points_num = 10,
                     training_num = 20,
+                    suggest_next_method = 'random_sampling', # hill climbing, genetic algorithm, random_sampling
                     description: str = 'Bayesian Optimization'
                 ):
         '''
@@ -170,7 +239,7 @@ class BayesianOptimization():# for single point optimization; using botorch
         self.description = description
         # initialize the parameters
         self.bounds = bounds
-        self.Normalizer = Normalizer(mode=normalizer_mode)
+        self.Normalizer = Normalizer(mode=normalizer_mode,possitive=normalizer_positive)
 
         self.object_function = object_function
         self.get_new_points_function = get_new_points_function
@@ -219,7 +288,21 @@ class BayesianOptimization():# for single point optimization; using botorch
         print(f'Initial best value: {self.best_value:.4f}')
 
         # initialize the acquisition function
-        
+        self.suggest_next_method = suggest_next_method
+        if suggest_next_method == 'ga' or suggest_next_method == 'genetic_algorithm':
+            class HGPMatrixEvolutionaryOptimization(Problem):
+                def __init__(self,l,m):
+                    super.__init__(n_var=l,         
+                                    n_obj=1,         
+                                    n_constr=0,
+                                    xl=np.zeros(l),  
+                                    xu=m*np.ones(l),   
+                                    vtype=int) 
+                def _evaluate(self,x,out,*arg,**kwargs):
+                    ei=self.ei(x)
+                    out['F']=np.array(ei)
+            self.problem = HGPMatrixEvolutionaryOptimization(len(bounds[0]),int(bounds[1][0]))
+        self.bounds = bounds
         if acquisition_function is None:
             self.bv = self.best_value
             self.acquisition_function = botorch.acquisition.LogExpectedImprovement(self.gp, self.bv)
@@ -331,20 +414,94 @@ class BayesianOptimization():# for single point optimization; using botorch
 
     #     return [best_candidate]
     def suggest_next(self) -> Tensor:
-        '''
-            return the next point to evaluate
-        '''
-
-        X_0 = self.get_new_points_function(self.num_candidates)
-        X = torch.tensor(X_0, dtype=torch.float32)
-        X.to(DEVICE)
-
-
-        # estimates = []
-
+        # print('suggesting next points...')
+        if self.suggest_next_method == 'random_sampling' or self.suggest_next_method =='rs':
+            return self.suggest_next_random_sampling()
+        elif self.suggest_next_method == 'hill_climbing' or self.suggest_next_method =='hc':
+            return self.suggest_next_hill_climbing()
+        elif self.suggest_next_method == 'genetic_algorithm' or self.suggest_next_method == 'ga':
+            return self.suggest_next_genetic_algorithm()
+    def suggest_next_genetic_algorithm(self):
+        # TODO
         self.gp.eval()
         self.gp.likelihood.eval()
-            
+        X_0 = self.get_new_points_function(self.num_candidates)
+        algorithm = GA(
+            pop_size=self.num_candidates,
+            sampling=IntegerRandomSampling(),
+            crossover=SBX(prob=1.0, eta=3.0, vtype=float, repair=RoundingRepair()),
+            mutation=PM(prob=1.0, eta=3.0, vtype=float, repair=RoundingRepair()),
+            eliminate_duplicates=True
+        )
+        res = minimize(self.problem,
+            algorithm,
+            termination=('n_gen', 200),
+            seed=1,
+)
+        return res.X
+    def hill_climbing_neighbors(self,x) ->Tensor:
+        """
+            x: (torch.tensor),size(x) = [1,p*q]
+
+            for qc-ldpc-hgp construction, define neighbors of a x\in \mathbb{Z}_{m+1} to be:
+            {x|x_{neighbor,!i}=x_{!i} and x_{neighbor,i}-x_i|=1 mod (m+1) or (x_{neighbor,i}=0 and x_i!=0 ) or (x_{neighbor,i}!=0 and x_i=0),i\in{0,1,2,...,p*q-1}}
+        """
+        neighbors = []
+        m = int(self.bounds[1][0])
+        # print(f'x:{x},x.size:{x.size()}')
+        for i in range(len(x)):
+            if x[i]==0:
+                for j in range(m):
+                    neighbor = x.detach().clone()
+                    neighbor[i] = j+1
+                    neighbors.append(neighbor)
+            else:
+                neighbor = x.detach().clone()
+                neighbor[i]=0
+                neighbors.append(neighbor)
+                neighbor = x.detach().clone()
+                neighbor[i] = (neighbor[i])%(m)+1
+                neighbors.append(neighbor)
+                neighbor = x.detach().clone()
+                neighbor[i] = (neighbor[i]-2)%(m)+1
+                neighbors.append(neighbor)
+        neighbors = torch.stack(neighbors, dim=0)
+        # print(f'x:{x},type:{type(neighbors)},neighbors:{neighbors}') # # #
+        
+        return neighbors
+
+
+
+    def suggest_next_hill_climbing(self) -> Tensor:
+        # print('running hill climbing algorithm...')
+        self.gp.eval()
+        self.gp.likelihood.eval()
+        X_0 = self.get_new_points_function(self.next_points_num)
+        X_0 = torch.tensor(X_0,dtype=torch.float32)
+        X_0.to(DEVICE)
+        # print(f'X size:{X_0.size()}') # # #
+        best_neighbors = []
+        for x in X_0:
+            best_neighbor = x
+            # print(f'x size:{best_neighbor.size()}') # # #
+            best_value = self.ei(best_neighbor.unsqueeze(0))
+            while True:
+                neighbors = self.hill_climbing_neighbors(best_neighbor)
+                neighbors.to(DEVICE)
+                ei = self.ei(neighbors)
+                value,indices= torch.topk(ei, 1)
+                new_best_neighbor = neighbors[indices.item()]
+                if value.item() <= best_value.item():
+                    break
+                else:
+                    best_neighbor = new_best_neighbor
+                    best_value = value
+            best_neighbors.append(best_neighbor)
+        best_neighbors = np.array(best_neighbors,dtype=np.int64)
+        return best_neighbors
+                
+
+    def ei(self,X):
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
 
             observed_pred = self.gp(X)
@@ -354,6 +511,24 @@ class BayesianOptimization():# for single point optimization; using botorch
             imp = mean_x - self.best_value - 0.01
             Z = imp / std_dev_x
             ei = imp * normal.cdf(Z) + std_dev_x * normal.log_prob(Z).exp()
+        return ei
+
+
+    def suggest_next_random_sampling(self) -> Tensor:
+        '''
+            return the next point to evaluate
+        '''
+        # print('running random sampling...')
+        X_0 = self.get_new_points_function(self.num_candidates)
+        X = torch.tensor(X_0, dtype=torch.float32)
+        X.to(DEVICE)
+
+
+        # estimates = []
+
+        
+            
+        ei = self.ei(X)
 
 
         values, indices = torch.topk(ei, self.next_points_num)
@@ -365,6 +540,7 @@ class BayesianOptimization():# for single point optimization; using botorch
         '''
             Run the Bayesian Optimization
         '''
+        
         evaluation_history= []
         best_y_paras = []
         pbar = tqdm.tqdm(range(self.BO_iterations), desc=self.description)
@@ -397,8 +573,12 @@ class BayesianOptimization():# for single point optimization; using botorch
                 self.best_value = next_value_best
                 self.best_parameters = next_point_best
                 best_y_paras.append([self.best_value,self.best_parameters])
+                with open('result.txt', 'a') as f:
+                    f.write(f"new code updated:{[self.best_value,self.best_parameters]}")
             # Update progress bar description with current best value
             pbar.set_description(f'{self.description} (Best value: {self.Normalizer.inverse_normalize(self.best_value)})(GP MLL: {loss}),time:suggesting next:{t_next-t0},evaluate: {t_evaluated-t_next},training: {t_train-t1}')
+            with open('result.txt', 'a') as f:
+                f.write(f"{self.description} (Best value: {self.Normalizer.inverse_normalize(self.best_value)})(GP MLL: {loss}),time:suggesting next:{t_next-t0},evaluate: {t_evaluated-t_next},training: {t_train-t1}")
         # print(self.best_parameters)
         
         return self.best_parameters,self.Normalizer.inverse_normalize(self.best_value),evaluation_history

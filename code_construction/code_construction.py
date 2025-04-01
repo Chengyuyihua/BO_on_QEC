@@ -91,6 +91,11 @@ class CSSCode(StabilizerCode):
     
         k = n - r_hx - r_hz
         return k
+    def compute_G(self):
+        '''
+
+        '''
+        return
     
 
 class CodeConstructor():
@@ -100,10 +105,11 @@ class CodeConstructor():
             1. Canonical construction.(for Evolutionary algorithm, general stabilizer codes)
             2. QC-LDPC-HGP construction.
             3. Bivariate-bycicle construction.
+            4. Rotated Surface code construction
     """
     def __init__(self,method='qc-ldpc-hgp',para_dict=None) -> None:
         """
-            mothod(str): The method of the code construction, 'canonical', 'qc-ldpc-hgp', 'bivariate-bycicle'.
+            mothod(str): The method of the code construction, 'canonical', 'qc-ldpc-hgp', 'bivariate-bycicle','rotated-surface'.
         """
         self.method = method
         self.para_dict = para_dict
@@ -122,6 +128,8 @@ class CodeConstructor():
             return self.check_qc_ldpc_hgp_parameters_validity()
         elif self.method == 'bivariate-bycicle':
             return self.check_bivariate_bycicle_parameters_validity()  
+        elif self.method == 'rotated-surface':
+            return True
         else:
             raise ValueError('The method is not supported.')
 
@@ -192,8 +200,58 @@ class CodeConstructor():
             return self.qc_ldpc_hgp_construction(parameters)
         elif self.method == 'bivariate-bycicle':
             return self.bivariate_bycicle_construction(parameters)
+        elif self.method == 'rotated-surface':
+            return self.rotated_surface_construction(parameters)
         else:
             raise ValueError('The method is not supported.')
+    def rotated_surface_construction(self,p):
+        """
+        p*p rotated surface code
+        """
+        def index(row, col,reversed=False):
+            if row<0 or row>=p or col<0 or col>=p:
+                return -1
+            if reversed:
+                return row + col * p
+            return row * p + col
+        if p % 2 == 0:
+            raise ValueError("p must be an odd number.")
+        N = int(p * p)
+        stabilizers_num = int((p-1)*(p-1)/2+p-1)
+        Hx = np.zeros((stabilizers_num, N), dtype=int)
+        Hz = np.zeros((stabilizers_num, N), dtype=int)
+        
+
+        x_stabilizers = [[] for i in range(stabilizers_num)]
+        z_stabilizers = [[] for i in range(stabilizers_num)]
+        for i in range(p+1):
+            for j in range((p-1)//2):
+                if index(i-1,j+(i+1)%2)!= -1:
+                    x_stabilizers[i*(p-1)//2+j].append(index(i-1,2*j+(i+1)%2))
+                if index(i-1,j+(i+1)%2+1)!= -1:
+                    x_stabilizers[i*(p-1)//2+j].append(index(i-1,2*j+(i+1)%2+1))
+                if index(i,j+(i+1)%2)!= -1:
+                    x_stabilizers[i*(p-1)//2+j].append(index(i,2*j+(i+1)%2))
+                if index(i,j+(i+1)%2+1)!= -1:
+                    x_stabilizers[i*(p-1)//2+j].append(index(i,2*j+(i+1)%2+1))
+        for i in range(p+1):
+            for j in range((p-1)//2):
+                if index(i-1,j+(i)%2,reversed=True)!= -1:
+                    z_stabilizers[i*(p-1)//2+j].append(index(i-1,2*j+(i)%2,reversed=True))
+                if index(i-1,j+(i)%2+1,reversed=True)!= -1:
+                    z_stabilizers[i*(p-1)//2+j].append(index(i-1,2*j+(i)%2+1,reversed=True))
+                if index(i,j+(i)%2,reversed=True)!= -1:
+                    z_stabilizers[i*(p-1)//2+j].append(index(i,2*j+(i)%2,reversed=True))
+                if index(i,j+(i)%2+1,reversed=True)!= -1:
+                    z_stabilizers[i*(p-1)//2+j].append(index(i,2*j+(i)%2+1,reversed=True))
+
+        for i in range(stabilizers_num):
+            for j in x_stabilizers[i]:
+                Hx[i,j] = 1
+            for j in z_stabilizers[i]:
+                Hz[i,j] = 1
+                
+        return CSSCode(Hx, Hz)
     
     def canonical_construction(self,bitstring,CSS=False) -> StabilizerCode:
         """
